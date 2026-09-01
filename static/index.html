@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Studyfetch · Document intelligence</title>
+  <link rel="stylesheet" href="/static/styles.css?v=ux2" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div>
+        <h1>Studyfetch</h1>
+        <p class="sub">Document intelligence · three indexes, one store</p>
+      </div>
+    </div>
+    <div class="header-meta">
+      <div id="health" class="health"></div>
+    </div>
+  </header>
+
+  <main>
+    <aside class="rail">
+      <section class="rail-block">
+        <div class="rail-head">
+          <h2>Library</h2>
+          <button class="btn btn-ghost btn-sm" id="uploadBtn" type="button">Upload PDF</button>
+          <input id="file" type="file" accept="application/pdf" hidden />
+        </div>
+        <p class="hint">Seeds load on startup. Remove a file to drop its indexes.</p>
+        <div id="docs" class="doc-list"></div>
+      </section>
+
+      <section class="rail-block">
+        <div class="rail-head">
+          <h2>Process</h2>
+        </div>
+        <div id="routeBox" class="route-box muted">Classifier picks <strong>Relay</strong> (light) or <strong>Prism</strong> (heavy) from layout. Baseline is the control.</div>
+        <fieldset class="pipe-picks">
+          <legend class="sr-only">Pipelines to run</legend>
+          <label class="check"><input type="checkbox" name="pipe" value="relay" checked /> <span>Relay</span><em class="tag relay">light</em></label>
+          <label class="check"><input type="checkbox" name="pipe" value="prism" /> <span>Prism</span><em class="tag prism">heavy</em></label>
+          <label class="check"><input type="checkbox" name="pipe" value="baseline" /> <span>Baseline</span><em class="tag baseline">control</em></label>
+        </fieldset>
+        <button class="btn btn-primary" id="runBtn" type="button">Run selected</button>
+        <div id="progressCard" class="progress-card" hidden>
+          <div class="progress-head">
+            <strong id="progressPct">0%</strong>
+            <span id="progressStage" class="meta"></span>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <ul id="progressPipes" class="progress-pipes"></ul>
+        </div>
+        <p class="meta status" id="status">Select a document, then run the pipelines you want to compare.</p>
+      </section>
+    </aside>
+
+    <section class="workspace">
+      <div class="workspace-bar">
+        <div>
+          <p class="eyebrow">Working set</p>
+          <h2 id="workspaceTitle">Document</h2>
+        </div>
+        <div class="pipe-switch" role="tablist" aria-label="Pipeline view">
+          <button class="seg" data-pipe="baseline" type="button">Baseline</button>
+          <button class="seg" data-pipe="prism" type="button">Prism</button>
+          <button class="seg active" data-pipe="relay" type="button">Relay</button>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Workspace">
+        <button class="nav-item active" data-tab="retrieve" type="button">Ask</button>
+        <button class="nav-item" data-tab="structure" type="button">Outline</button>
+        <button class="nav-item" data-tab="inspect" type="button">Evidence</button>
+        <button class="nav-item" data-tab="json" type="button">JSON</button>
+        <button class="nav-item" data-tab="bench" type="button">Score</button>
+        <button class="nav-item" data-tab="designs" type="button">Designs</button>
+      </nav>
+
+      <div id="structure" hidden></div>
+      <div id="jsonWrap" hidden><pre id="json"></pre></div>
+
+      <div id="retrieve">
+        <div class="ask-bar card">
+          <div class="ask-copy">
+            <h3>Ask the three indexes</h3>
+            <p class="muted">Same question, three designs. Prism runs <strong>PrismShield</strong> on every hit — Baseline and Relay do not.</p>
+          </div>
+          <div class="ask-row">
+            <input id="query" type="text" placeholder="Ask across the library…" />
+            <div class="intent-seg" id="intentGroup">
+              <select id="intent" aria-label="Prism intent mix">
+                <option value="">Intent (Prism)</option>
+                <option value="parameter">Parameter</option>
+                <option value="academic">Academic</option>
+                <option value="financial">Financial</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" id="queryBtn" type="button">Ask</button>
+          </div>
+          <div class="ask-tools">
+            <div class="samples">
+              <button class="chip-btn" type="button" data-sample-q="What is the maximum operating voltage?" data-sample-intent="parameter">Voltage</button>
+              <button class="chip-btn" type="button" data-sample-q="transformer attention used in industrial controllers" data-sample-intent="academic">Overlap</button>
+              <button class="chip-btn" type="button" data-sample-q="Why does the fox ask to be tamed?" data-sample-intent="academic">Fox</button>
+            </div>
+            <label class="toggle"><input type="checkbox" id="searchAll" checked /> <span>Search library</span></label>
+          </div>
+        </div>
+        <div id="hits"></div>
+      </div>
+
+      <div id="bench" hidden>
+        <div class="card">
+          <h3>Graded bake-off</h3>
+          <p class="muted">Hits scored 0–3. Overall is 75% retrieval + 25% structure. VectorPrism and ChorusGraph are listed, not extra points. PrismShield is a capability, not a score bonus.</p>
+          <button class="btn btn-primary" id="benchBtn" type="button">Run benchmark</button>
+        </div>
+        <div id="bonusOut"></div>
+        <div id="benchOut"></div>
+      </div>
+
+      <div id="designs" hidden>
+        <div class="card">
+          <h3>Three pipelines, one store</h3>
+          <p class="muted">Each design writes into <code>intelligence.db</code>. Ingest builds the index. <strong>Ask</strong> is a different path — only Prism runs PrismShield there.</p>
+        </div>
+
+        <div class="card matrix-card">
+          <h3>What happens when you ask</h3>
+          <table class="matrix">
+            <tr>
+              <th></th>
+              <th class="baseline">Baseline</th>
+              <th class="prism">Prism</th>
+              <th class="relay">Relay</th>
+            </tr>
+            <tr>
+              <td>Index</td>
+              <td>1 vec + FTS5</td>
+              <td>6 channels + FTS5 + graph</td>
+              <td>1 vec + FTS5</td>
+            </tr>
+            <tr>
+              <td>Prefix</td>
+              <td>Heading path</td>
+              <td>Document / Intent / Section</td>
+              <td>Document / Section / Pages</td>
+            </tr>
+            <tr>
+              <td>PrismShield</td>
+              <td class="off">Not applied</td>
+              <td class="on">Query-time gate</td>
+              <td class="off">Not applied</td>
+            </tr>
+            <tr>
+              <td>Signed digits</td>
+              <td class="off">—</td>
+              <td>Ed25519 manifest + verified list</td>
+              <td class="off">—</td>
+            </tr>
+            <tr>
+              <td>Cross-doc</td>
+              <td class="off">No graph</td>
+              <td>ChorusGraph expand</td>
+              <td class="off">No graph</td>
+            </tr>
+            <tr>
+              <td>Figures</td>
+              <td class="off">Not attached</td>
+              <td>asset ids</td>
+              <td>asset ids + page label</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Representation</h3>
+          <dl class="qa">
+            <dt>Useful for downstream AI?</dt>
+            <dd>Yes. Outline + <code>retrieval_text</code> + pages + section ids. Prism adds <code>verified_parameters</code>, <code>shield</code>, and graph edges. Relay adds <code>asset_ids</code> and page labels.</dd>
+            <dt>Traceable to the original document?</dt>
+            <dd>Yes. <code>document_id</code> → filename / sha256; <code>section_id</code>; <code>page_start/end</code>. Prism metrics add <code>provenance_page</code> + Ed25519. Relay figures resolve at <code>/api/assets/{id}</code>.</dd>
+            <dt>Context without dumping the PDF?</dt>
+            <dd>Yes. Each stack prefixes only the heading path. Relay keeps one leaf section. Prism may add one related section via ChorusGraph — not the sibling chapter.</dd>
+          </dl>
+        </div>
+
+        <div class="design-grid">
+          <article class="card design-card" id="design-card-baseline">
+            <p class="eyebrow baseline">Control</p>
+            <h3>Baseline</h3>
+            <p class="muted">LangGraph extract → OCR if sparse → recursive windows. One embedding channel. No Shield, no graph.</p>
+            <ol class="steps">
+              <li>Ingest: structure + path prefix</li>
+              <li>Ask: <code>vec_baseline</code> + FTS5</li>
+              <li>No PrismShield</li>
+            </ol>
+            <button class="btn btn-ghost" type="button" data-open-design="baseline">Open design</button>
+          </article>
+          <article class="card design-card" id="design-card-prism">
+            <p class="eyebrow prism">Heavy</p>
+            <h3>Prism</h3>
+            <p class="muted">Six VectorPrism channels, ChorusGraph, signed metrics. Shield is a <strong>query gate</strong>, not an ingest step.</p>
+            <ol class="steps">
+              <li>Ingest: Cortex → Manifest (Ed25519) → 6ch + graph</li>
+              <li>Ask: intent mix → ChorusGraph expand</li>
+              <li><strong>PrismShield</strong> — verified / unsigned / drifted</li>
+            </ol>
+            <div class="shield-legend">
+              <span class="ok">Verified</span> exact signed value
+              <span class="muted">Unsigned</span> years, F1, 3.1
+              <span class="warn">Drifted</span> same unit, never bound
+            </div>
+            <button class="btn btn-ghost" type="button" data-open-design="prism">Open design</button>
+          </article>
+          <article class="card design-card" id="design-card-relay">
+            <p class="eyebrow relay">Light</p>
+            <h3>Relay</h3>
+            <p class="muted">Page router. OCR only on failed pages. Leaf sections + assets. No Shield, no graph.</p>
+            <ol class="steps">
+              <li>Ingest: page label + leaf chunk</li>
+              <li>Ask: <code>vec_relay</code> + FTS5</li>
+              <li>No PrismShield</li>
+            </ol>
+            <button class="btn btn-ghost" type="button" data-open-design="relay">Open design</button>
+          </article>
+        </div>
+
+        <div class="card" id="designDocCard" hidden>
+          <div class="row between">
+            <h3 id="designDocTitle" style="margin:0">Design</h3>
+            <a id="designDocRaw" href="#" target="_blank" rel="noreferrer">Raw markdown</a>
+          </div>
+          <article id="designDocBody" class="md"></article>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js?v=ux1"></script>
+</body>
+</html>

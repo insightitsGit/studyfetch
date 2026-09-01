@@ -1,0 +1,24 @@
+services:
+  docintel:
+    build: .
+    image: studyfetch-docintel:local
+    container_name: studyfetch-docintel
+    ports:
+      - "8000:8000"
+    volumes:
+      - docintel-data:/data
+    environment:
+      DATA_DIR: /data
+      EMBEDDING_DIM: "384"
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+      # Optional: Azure Blob for figures/PDFs (local filesystem used when unset)
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-document-assets}
+      # Optional: OpenAI for Relay outline cleanup / Prism entity gloss
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    restart: unless-stopped
+
+volumes:
+  docintel-data:

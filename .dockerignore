@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+data
+*.db
+.env
+.cursor
+node_modules
+*.md
+!docs/*.md
