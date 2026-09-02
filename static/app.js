@@ -77,12 +77,15 @@ async function removeDocument(id, filename) {
   }
 }
 
+function pickPdf() {
+  $("file").value = "";
+  $("file").click();
+}
+
 async function uploadPdf() {
-  const file = $("file").files[0];
-  if (!file) {
-    $("file").click();
-    return;
-  }
+  const input = $("file");
+  const file = input.files[0];
+  if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
   $("status").textContent = `Uploading ${file.name}…`;
@@ -91,14 +94,19 @@ async function uploadPdf() {
     const doc = await api("/api/documents", { method: "POST", body: fd });
     state.documentId = doc.id;
     applyRoute(doc);
-    const rec = (doc.route || {}).pipeline || "relay";
-    $("status").textContent = `Uploaded ${doc.filename}. Classifier: ${(doc.route || {}).tier || "light"} → ${rec}. Running that pipeline…`;
     await refreshDocs();
     await loadStructure();
+    if (doc.already_present) {
+      $("status").textContent = `${doc.filename} is already in the library (same file). Pick a different PDF.`;
+      return;
+    }
+    const rec = (doc.route || {}).pipeline || "relay";
+    $("status").textContent = `Uploaded ${doc.filename}. Classifier: ${(doc.route || {}).tier || "light"} → ${rec}. Running that pipeline…`;
     await runSelected();
   } catch (err) {
     $("status").textContent = String(err);
   } finally {
+    input.value = "";
     $("uploadBtn").disabled = false;
   }
 }
@@ -814,7 +822,7 @@ function setPipeline(id) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  $("uploadBtn").onclick = uploadPdf;
+  $("uploadBtn").onclick = pickPdf;
   $("runBtn").onclick = runSelected;
   $("queryBtn").onclick = runQuery;
   $("query").addEventListener("keydown", (ev) => {

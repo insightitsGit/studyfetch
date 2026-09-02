@@ -66,7 +66,9 @@ def ingest_pdf(store: Store, filename: str, data: bytes) -> dict[str, Any]:
     digest = sha256_bytes(data)
     existing = store.fetchone("SELECT * FROM documents WHERE sha256=?", (digest,))
     if existing:
-        return existing
+        row = dict(existing)
+        row["already_present"] = True
+        return row
 
     document_id = f"doc_{digest[:16]}"
     blob_uri = blob_store.put(f"{document_id}/source.pdf", data, "application/pdf")
@@ -133,7 +135,10 @@ def ingest_pdf(store: Store, filename: str, data: bytes) -> dict[str, Any]:
         ],
     )
     store.replace_assets(document_id, figures + tables)
-    return store.fetchone("SELECT * FROM documents WHERE id=?", (document_id,))
+    row = store.fetchone("SELECT * FROM documents WHERE id=?", (document_id,))
+    if row:
+        row["already_present"] = False
+    return row
 
 
 def resolve_pdf_path(store: Store, document_id: str) -> Path:
