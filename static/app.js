@@ -12,7 +12,16 @@ async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let msg = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.detail != null) {
+        msg = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
+      }
+    } catch {
+      /* keep raw text */
+    }
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -534,7 +543,13 @@ function renderGrades(grades) {
 
 async function runBench() {
   $("benchOut").textContent = "Scoring retrieval quality, structure, and model/OCR/embed calls…";
-  const data = await api("/api/benchmark", { method: "POST" });
+  let data;
+  try {
+    data = await api("/api/benchmark", { method: "POST" });
+  } catch (err) {
+    $("benchOut").innerHTML = `<p class="warn">${esc(String(err.message || err))}</p>`;
+    return;
+  }
   const leakBy = Object.fromEntries(
     (data.structure || []).map((s) => [s.pipeline_id, s.avg_boilerplate_leak])
   );

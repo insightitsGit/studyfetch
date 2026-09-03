@@ -296,7 +296,11 @@ def query_index(body: QueryBody):
 
 @app.post("/api/benchmark")
 def benchmark():
-    return run_benchmark(get_store())
+    try:
+        return run_benchmark(get_store())
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(500, f"benchmark failed: {exc}") from exc
 
 
 @app.get("/api/designs")

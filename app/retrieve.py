@@ -62,24 +62,7 @@ def retrieve(
         }
         merged, vectorprism = vectorprism_fuse(channel_hits, fts_hits, intent, k)
         extra = _graph_expand(store, merged, document_id=document_id)
-        seen = {m["chunk_id"] for m in merged}
-        by_id = {m["chunk_id"]: m for m in merged}
-        for item in extra:
-            cid = item["chunk_id"]
-            if cid in seen:
-                existing = by_id[cid]
-                existing.setdefault("channels", [])
-                if "chorusgraph" not in existing["channels"]:
-                    existing["channels"].append("chorusgraph")
-                existing["graph_edge"] = item.get("graph_edge") or existing.get("graph_edge")
-                existing["graph_weight"] = item.get("graph_weight")
-                continue
-            item.setdefault("channels", [])
-            if "chorusgraph" not in item["channels"]:
-                item["channels"].append("chorusgraph")
-            merged.append(item)
-            seen.add(cid)
-        merged = merged[: k + 2]
+        merged = merge_graph_hits(merged, extra)[: k + 2]
         if apply_shield:
             merged = PrismShield(store).filter_chunks(merged)
             merged = _annotate_verified_params(store, merged)
@@ -206,8 +189,50 @@ def _attach_page_labels(store: Store, hits: list[dict]) -> None:
         h["page_label"] = labels.get((h.get("document_id"), int(page)))
 
 
+def merge_graph_hits(merged: list[dict], extra: list[dict]) -> list[dict]:
+    """Fold ChorusGraph neighbors into the hit list.
+
+    Several edges can resolve to the same related chunk. Keep `by_id` in
+    sync so a second mention annotates the first instead of KeyError.
+    """
+    out = list(merged)
+    by_id: dict[str, dict] = {}
+    for hit in out:
+        cid = hit.get("chunk_id") or hit.get("id")
+        if cid:
+            hit["chunk_id"] = cid
+            by_id[cid] = hit
+    for item in extra:
+        cid = item.get("chunk_id") or item.get("id")
+        if not cid:
+            continue
+        item = dict(item)
+        item["chunk_id"] = cid
+        item.setdefault("channels", [])
+        if "chorusgraph" not in item["channels"]:
+            item["channels"].append("chorusgraph")
+        existing = by_id.get(cid)
+        if existing:
+            existing.setdefault("channels", [])
+            if "chorusgraph" not in existing["channels"]:
+                existing["channels"].append("chorusgraph")
+            existing["graph_edge"] = item.get("graph_edge") or existing.get("graph_edge")
+            if item.get("graph_weight") is not None:
+                prev = existing.get("graph_weight")
+                existing["graph_weight"] = (
+                    max(float(prev), float(item["graph_weight"]))
+                    if prev is not None
+                    else item["graph_weight"]
+                )
+            continue
+        out.append(item)
+        by_id[cid] = item
+    return out
+
+
 def _graph_expand(store: Store, hits: list[dict], document_id: str | None = None) -> list[dict]:
     extra = []
+    seen_extra: set[str] = set()
     for hit in hits[:3]:
         sid = hit.get("section_id")
         if not sid:
@@ -234,21 +259,26 @@ def _graph_expand(store: Store, hits: list[dict], document_id: str | None = None
             )
             if chunk and document_id and chunk["document_id"] != document_id:
                 continue
-            if chunk:
-                hit.setdefault("channels", [])
-                if "chorusgraph" not in hit["channels"]:
-                    hit["channels"].append("chorusgraph")
-                hit["graph_edge"] = e["relationship_type"]
-                hit["graph_weight"] = e["weight"]
-                extra.append(
-                    {
-                        **chunk,
-                        "chunk_id": chunk["id"],
-                        "score": 0.25 * float(e["weight"]),
-                        "graph_edge": e["relationship_type"],
-                        "graph_weight": e["weight"],
-                    }
-                )
+            if not chunk:
+                continue
+            cid = chunk["id"]
+            if cid in seen_extra:
+                continue
+            seen_extra.add(cid)
+            hit.setdefault("channels", [])
+            if "chorusgraph" not in hit["channels"]:
+                hit["channels"].append("chorusgraph")
+            hit["graph_edge"] = e["relationship_type"]
+            hit["graph_weight"] = e["weight"]
+            extra.append(
+                {
+                    **chunk,
+                    "chunk_id": cid,
+                    "score": 0.25 * float(e["weight"]),
+                    "graph_edge": e["relationship_type"],
+                    "graph_weight": e["weight"],
+                }
+            )
     return extra
 
 
