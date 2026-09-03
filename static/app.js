@@ -36,6 +36,7 @@ function pipelineClass(id) {
 
 async function refreshDocs() {
   state.documents = await api("/api/documents");
+  loadSamples();
   const box = $("docs");
   box.innerHTML = "";
   for (const doc of state.documents) {
@@ -589,15 +590,17 @@ async function runBench() {
     .join("");
   const structRows = (data.structure || [])
     .map((s) => {
-      const rec = s.avg_heading_recall == null ? "—" : `${Math.round(s.avg_heading_recall * 100)}%`;
+      const integ = s.avg_heading_integrity ?? s.avg_heading_recall;
+      const rec = integ == null ? "—" : `${Math.round(integ * 100)}%`;
       const leak = s.avg_boilerplate_leak == null ? "—" : `${Math.round(s.avg_boilerplate_leak * 100)}%`;
+      const prov = s.avg_provenance == null ? "—" : `${Math.round(s.avg_provenance * 100)}%`;
       const docs = (s.documents || [])
         .map((d) => `${esc(d.filename)}: L${(d.heading_levels || []).join("/")} · ${d.sections} sections · ctx ${Math.round((d.section_context_coverage || 0) * 100)}%`)
         .join("<br>");
       const vp = (s.vectorprism_channels || []).length
         ? `<div>VectorPrism: ${s.vectorprism_channels.join(", ")}</div>`
         : "";
-      return `<tr><td>${s.pipeline_id}</td><td>${rec}</td><td>${leak}</td><td class="meta">${docs || "—"}${vp}</td></tr>`;
+      return `<tr><td>${s.pipeline_id}</td><td>${rec}</td><td>${prov}</td><td>${leak}</td><td class="meta">${docs || "—"}${vp}</td></tr>`;
     })
     .join("");
   const queryBlocks = (data.results || [])
@@ -617,7 +620,9 @@ async function runBench() {
           <tr><td></td><td colspan="4">${renderGrades(qy.grades)}${renderChecks(qy.checks)}</td></tr>`;
         })
         .join("");
-      return `<h3>${esc(q.query)}</h3><p class="muted">${esc(q.notes || "")} Must contain: ${(q.must_contain || []).join(", ") || "—"}</p>
+      const kind = q.kind ? `<span class="pill">${esc(String(q.kind).replaceAll("_", " "))}</span> ` : "";
+      const src = q.source && (q.source.filename || (q.source.filenames || []).join(", "));
+      return `<h3>${kind}${esc(q.query)}</h3><p class="muted">${esc(q.notes || "")}${src ? ` · ${esc(src)}` : ""} Expect: ${(q.must_contain || []).join(", ") || "—"}</p>
         <table class="compare"><tr><th>Pipeline</th><th>Quality</th><th>Latency</th><th>Index / calls</th><th>Top hit</th></tr>${rows}</table>`;
     })
     .join("");
@@ -648,14 +653,15 @@ async function runBench() {
     </div>
     <div class="card">
       <h3>Structure quality</h3>
-      <p class="muted">Heading recall vs gold outlines on seed PDFs. Context = section path on the chunk. Leak = running headers left in retrieval text.</p>
-      <table class="compare"><tr><th>Pipeline</th><th>Heading recall</th><th>Boilerplate leak</th><th>Per document</th></tr>${structRows}</table>
+      <p class="muted">${esc(data.rubric?.structure || "Heading integrity, provenance, section path, and running-header leak — measured on whatever PDFs are indexed.")}</p>
+      <table class="compare"><tr><th>Pipeline</th><th>Heading integrity</th><th>Provenance</th><th>Header leak</th><th>Per document</th></tr>${structRows}</table>
     </div>
     <div class="card">
       <h3>Per-query retrieval</h3>
       ${queryBlocks}
     </div>
   `;
+  $("benchOut").dataset.filled = "1";
   renderBonus(data.bonus);
 }
 
@@ -828,6 +834,52 @@ async function loadBonus() {
   } catch {
     /* bench run will fill this */
   }
+  loadBenchPlan();
+}
+
+async function loadSamples() {
+  const box = $("sampleQueries");
+  if (!box) return;
+  try {
+    const samples = await api("/api/samples");
+    box.innerHTML = "";
+    (samples || []).forEach((s) => {
+      const btn = document.createElement("button");
+      btn.className = "chip-btn";
+      btn.type = "button";
+      btn.textContent = s.label || "Ask";
+      btn.title = s.query || "";
+      btn.onclick = () => {
+        $("query").value = s.query || "";
+        if ($("intent") && s.intent) $("intent").value = s.intent;
+        runQuery();
+      };
+      box.appendChild(btn);
+    });
+  } catch {
+    box.innerHTML = "";
+  }
+}
+
+async function loadBenchPlan() {
+  const out = $("benchOut");
+  if (!out || out.dataset.filled === "1") return;
+  try {
+    const plan = await api("/api/benchmark/plan");
+    if (!plan || !plan.probes || !plan.probes.length) {
+      out.innerHTML = `<p class="muted">Index at least one PDF. Probes are built from the current library.</p>`;
+      return;
+    }
+    const rows = plan.probes
+      .map((p) => {
+        const src = p.source && (p.source.filename || (p.source.filenames || []).join(", "));
+        return `<div class="meta"><strong>${esc((p.kind || "probe").replaceAll("_", " "))}</strong> · ${esc(p.query)}${src ? ` · ${esc(src)}` : ""}</div>`;
+      })
+      .join("");
+    out.innerHTML = `<div class="card"><h3>Probes for this library</h3><p class="muted">${esc(plan.note || "")} ${plan.queries} questions.</p>${rows}</div>`;
+  } catch {
+    /* run benchmark will report errors */
+  }
 }
 
 function setPipeline(id) {
@@ -842,14 +894,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("queryBtn").onclick = runQuery;
   $("query").addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") runQuery();
-  });
-  document.querySelectorAll("[data-sample-q]").forEach((el) => {
-    el.onclick = () => {
-      $("query").value = el.getAttribute("data-sample-q") || "";
-      const intent = el.getAttribute("data-sample-intent") || "";
-      if ($("intent") && intent) $("intent").value = intent;
-      runQuery();
-    };
   });
   $("benchBtn").onclick = runBench;
   $("file").addEventListener("change", uploadPdf);

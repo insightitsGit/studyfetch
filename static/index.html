@@ -102,11 +102,7 @@
             <button class="btn btn-primary" id="queryBtn" type="button">Ask</button>
           </div>
           <div class="ask-tools">
-            <div class="samples">
-              <button class="chip-btn" type="button" data-sample-q="What is the maximum operating voltage?" data-sample-intent="parameter">Voltage</button>
-              <button class="chip-btn" type="button" data-sample-q="transformer attention used in industrial controllers" data-sample-intent="academic">Overlap</button>
-              <button class="chip-btn" type="button" data-sample-q="Why does the fox ask to be tamed?" data-sample-intent="academic">Fox</button>
-            </div>
+            <div class="samples" id="sampleQueries"></div>
             <label class="toggle"><input type="checkbox" id="searchAll" checked /> <span>Search library</span></label>
           </div>
         </div>
@@ -116,7 +112,7 @@
       <div id="bench" hidden>
         <div class="card">
           <h3>Graded bake-off</h3>
-          <p class="muted">Hits scored 0–3. Overall is 75% retrieval + 25% structure. VectorPrism and ChorusGraph are listed, not extra points. PrismShield is a capability, not a score bonus.</p>
+          <p class="muted">Probes are generated from the current library (parameters, unique terms, shared terms) — not a script for the seed PDFs. Hits scored 0–3. Overall is 75% retrieval + 25% structure. VectorPrism and ChorusGraph are listed, not extra points.</p>
           <button class="btn btn-primary" id="benchBtn" type="button">Run benchmark</button>
         </div>
         <div id="bonusOut"></div>
@@ -240,6 +236,6 @@
       </div>
     </section>
   </main>
-  <script src="/static/app.js?v=ux4"></script>
+  <script src="/static/app.js?v=ux5"></script>
 </body>
 </html>

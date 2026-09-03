@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS benchmark_queries (
     id              TEXT PRIMARY KEY,
     query           TEXT NOT NULL,
     intent          TEXT,
-    notes           TEXT
+    notes           TEXT,
+    gold_json       TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS benchmark_results (

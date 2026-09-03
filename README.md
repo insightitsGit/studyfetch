@@ -72,7 +72,7 @@ First start downloads the embed model and indexes seeds.
 | OpenAI / vision | off by default |
 | Ed25519 | Prism parameters only |
 
-**Score** reports call counts vs “send every page to a multimodal model.” Graded bake-off: nDCG@5, MRR, P@5, provenance, distractors (75% retrieval / 25% structure). VectorPrism and ChorusGraph are listed, not extra points.
+**Score** builds probes from the current library (extracted parameters, unique terms, shared terms) — not a gold script for the seed PDFs. Graded bake-off: nDCG@5, MRR, P@5, provenance, distractors (75% retrieval / 25% structure). VectorPrism and ChorusGraph are listed, not extra points.
 
 ## Failure modes and tradeoffs
 

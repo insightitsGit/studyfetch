@@ -54,6 +54,11 @@ class Store:
     def _init_schema(self) -> None:
         sql = SCHEMA_PATH.read_text(encoding="utf-8")
         self.conn.executescript(sql)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(benchmark_queries)").fetchall()}
+        if "gold_json" not in cols:
+            self.conn.execute(
+                "ALTER TABLE benchmark_queries ADD COLUMN gold_json TEXT NOT NULL DEFAULT '{}'"
+            )
         dim = settings.embedding_dim
         for table in _VEC_TABLES.values():
             self.conn.execute(

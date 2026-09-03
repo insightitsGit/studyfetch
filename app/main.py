@@ -18,7 +18,7 @@ from app.classify import classify_route_from_pages
 from app.pipelines import PIPELINES, REGISTRY, get_pipeline, ingest_pdf, resolve_pdf_path
 from app.progress import ProgressReporter, bind_progress, jobs
 from app.retrieve import retrieve
-from app.benchmark import run_benchmark, seed_queries
+from app.benchmark import corpus_from_store, generate_probes, run_benchmark, seed_queries
 from app.bonus import analyze_collection
 from app.seed import seed_corpus
 from app.storage.blobs import blob_store
@@ -55,7 +55,6 @@ DESIGN_CATALOG = [
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     store = get_store()
-    seed_queries(store)
     docs = seed_corpus(store)
     try:
         warmup()
@@ -72,6 +71,7 @@ async def lifespan(app: FastAPI):
                     print(f"[startup] {name} finished {doc['filename']}")
                 except Exception as exc:
                     print(f"[startup] {name} failed on {doc['filename']}: {exc}")
+    seed_queries(store)
     yield
     store.close()
 
@@ -292,6 +292,45 @@ def query_index(body: QueryBody):
         apply_shield=body.apply_shield,
         document_id=body.document_id,
     )
+
+
+def _current_probes():
+    corpus = corpus_from_store(get_store())
+    return generate_probes(corpus["documents"], corpus["pages"], corpus["assets"])
+
+
+@app.get("/api/benchmark/plan")
+def benchmark_plan():
+    queries = _current_probes()
+    return {
+        "queries": len(queries),
+        "probes": [
+            {
+                "id": q["id"],
+                "kind": q.get("kind"),
+                "query": q["query"],
+                "intent": q.get("intent"),
+                "notes": q.get("notes"),
+                "source": q.get("source"),
+                "must_contain": q.get("must_contain"),
+            }
+            for q in queries
+        ],
+        "note": "Probes are rebuilt from the current library each run. Nothing is hardcoded to a seed PDF.",
+    }
+
+
+@app.get("/api/samples")
+def sample_queries():
+    queries = _current_probes()
+    return [
+        {
+            "query": q["query"],
+            "intent": q.get("intent") or "",
+            "label": (q.get("kind") or "ask").replace("_", " "),
+        }
+        for q in queries[:4]
+    ]
 
 
 @app.post("/api/benchmark")
