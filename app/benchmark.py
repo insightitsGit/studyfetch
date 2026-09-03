@@ -977,6 +977,197 @@ def cost_rollup(store: Store) -> list[dict[str, Any]]:
     return rows
 
 
+def _count(store: Store, sql: str, args: tuple = ()) -> int:
+    row = store.fetchone(sql, args)
+    return int((row or {}).get("n") or 0)
+
+
+def capability_inventory(store: Store) -> dict[str, Any]:
+    """Live index catalog. Not a score — what each pipeline actually built."""
+    stats = {s["index"]: s for s in store.index_stats()}
+    chunks = {
+        r["pipeline_id"]: int(r["n"])
+        for r in store.fetchall("SELECT pipeline_id, COUNT(*) AS n FROM chunks GROUP BY pipeline_id")
+    }
+    prism_channels = {
+        name: int((stats.get(f"prism_{name}") or {}).get("vectors") or 0)
+        for name in ("semantic", "structural", "title", "entity", "numeric", "caption")
+    }
+    edge_kinds = {
+        r["relationship_type"]: int(r["n"])
+        for r in store.fetchall(
+            "SELECT relationship_type, COUNT(*) AS n FROM chorusgraph_edges GROUP BY relationship_type"
+        )
+    }
+    cross_doc = _count(
+        store,
+        """
+        SELECT COUNT(*) AS n FROM chorusgraph_edges
+        WHERE document_id_source IS NOT NULL AND document_id_target IS NOT NULL
+          AND document_id_source != document_id_target
+        """,
+    )
+    signed = _count(
+        store,
+        "SELECT COUNT(*) AS n FROM document_parameters WHERE COALESCE(manifest_signature, '') != ''",
+    )
+    pipelines = {
+        "baseline": {
+            "index": "vec_baseline+fts5",
+            "vec_tables": ["vec_baseline"],
+            "vectors": int((stats.get("baseline") or {}).get("vectors") or 0),
+            "chunks": chunks.get("baseline") or 0,
+            "embeddings_per_chunk": 1,
+            "chorusgraph_nodes": 0,
+            "chorusgraph_edges": 0,
+            "cross_document_edges": 0,
+            "signed_parameters": 0,
+            "manifests": 0,
+            "shield": False,
+            "channels": {},
+        },
+        "prism": {
+            "index": "vectorprism:6ch+fts5+chorusgraph",
+            "vec_tables": [f"vec_prism_{c}" for c in prism_channels],
+            "vectors": sum(prism_channels.values()),
+            "chunks": chunks.get("prism") or 0,
+            "embeddings_per_chunk": 6,
+            "chorusgraph_nodes": _count(store, "SELECT COUNT(*) AS n FROM chorusgraph_nodes"),
+            "chorusgraph_edges": sum(edge_kinds.values()),
+            "cross_document_edges": cross_doc,
+            "edge_kinds": edge_kinds,
+            "signed_parameters": signed,
+            "manifests": _count(store, "SELECT COUNT(*) AS n FROM prism_manifests"),
+            "shield": True,
+            "channels": prism_channels,
+        },
+        "relay": {
+            "index": "vec_relay+fts5",
+            "vec_tables": ["vec_relay"],
+            "vectors": int((stats.get("relay") or {}).get("vectors") or 0),
+            "chunks": chunks.get("relay") or 0,
+            "embeddings_per_chunk": 1,
+            "chorusgraph_nodes": 0,
+            "chorusgraph_edges": 0,
+            "cross_document_edges": 0,
+            "signed_parameters": 0,
+            "manifests": 0,
+            "shield": False,
+            "channels": {},
+        },
+    }
+    live_6ch = sum(1 for n in prism_channels.values() if n > 0)
+    return {
+        "indexes": store.index_stats(),
+        "pipelines": pipelines,
+        "vectorprism_live_channels": live_6ch,
+        "note": (
+            "These are the indexes in intelligence.db. "
+            "The graded 100 does not add points for 6ch, graph, signatures, or Shield."
+        ),
+    }
+
+
+def _hit_channels(hit: dict) -> list[str]:
+    raw = hit.get("channels") or []
+    return [str(c) for c in raw]
+
+
+def tradeoff_report(results: list[dict[str, Any]], inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Per-kind winners + what Prism actually used. Does not change the 100."""
+    inventory = inventory or {}
+    by_kind: dict[str, dict[str, list[float]]] = defaultdict(lambda: {p: [] for p in PIPELINES})
+    prism_numeric = 0
+    prism_caption = 0
+    prism_graph = 0
+    prism_queries = 0
+    verified: list[str] = []
+    for block in results:
+        kind = str((block.get("query") or {}).get("kind") or "probe")
+        for row in block.get("pipelines") or []:
+            pid = row.get("pipeline_id")
+            if pid not in PIPELINES:
+                continue
+            by_kind[kind][pid].append(float((row.get("quality") or {}).get("score") or 0))
+            if pid != "prism":
+                continue
+            prism_queries += 1
+            channels: set[str] = set()
+            for hit in row.get("hits") or []:
+                channels.update(_hit_channels(hit))
+                if hit.get("graph_edge"):
+                    channels.add("chorusgraph")
+            vp = row.get("vectorprism") or {}
+            channels.update(str(c) for c in (vp.get("channels") or []) if c)
+            if "numeric" in channels:
+                prism_numeric += 1
+            if "caption" in channels:
+                prism_caption += 1
+            if "chorusgraph" in channels or any(hit.get("graph_edge") for hit in (row.get("hits") or [])):
+                prism_graph += 1
+            shield = row.get("shield") or {}
+            verified.extend(str(v) for v in (shield.get("verified") or []) if v)
+
+    kind_winners = []
+    for kind, pipes in by_kind.items():
+        avgs = {pid: round(sum(xs) / len(xs), 1) if xs else 0.0 for pid, xs in pipes.items()}
+        top = max(avgs.values()) if avgs else 0.0
+        tied = [p for p in PIPELINES if avgs.get(p, 0.0) == top]
+        winner = tied[0] if len(tied) == 1 else "tie"
+        kind_winners.append(
+            {
+                "kind": kind,
+                "winner": winner,
+                "tied": tied if winner == "tie" else [],
+                "scores": avgs,
+                "n": max((len(xs) for xs in pipes.values()), default=0),
+            }
+        )
+    kind_winners.sort(key=lambda r: r["kind"])
+
+    prism_inv = (inventory.get("pipelines") or {}).get("prism") or {}
+    talk = [
+        "The graded 100 is comparable retrieval (nDCG / MRR / P@5 + structure). "
+        "VectorPrism, ChorusGraph, Ed25519, and Shield are listed here — not added to that 100.",
+    ]
+    if prism_inv:
+        talk.append(
+            f"Prism's live index is 6 vec tables + FTS5 + ChorusGraph "
+            f"({prism_inv.get('vectors') or 0} vectors, "
+            f"{prism_inv.get('cross_document_edges') or 0} cross-doc edges, "
+            f"{prism_inv.get('signed_parameters') or 0} signed parameters). "
+            "Baseline and Relay are one vec + FTS5."
+        )
+    if prism_queries:
+        talk.append(
+            f"On this run Prism used the numeric channel on {prism_numeric}/{prism_queries} probes, "
+            f"caption on {prism_caption}/{prism_queries}, and ChorusGraph expand on {prism_graph}/{prism_queries}."
+        )
+    if verified:
+        talk.append("Shield verified this run: " + ", ".join(list(dict.fromkeys(verified))[:8]) + ".")
+    else:
+        talk.append("Shield ran on Prism only. Baseline and Relay return unsigned prose.")
+
+    return {
+        "kind_winners": kind_winners,
+        "prism_used": {
+            "probes": prism_queries,
+            "numeric_channel": prism_numeric,
+            "caption_channel": prism_caption,
+            "chorusgraph_expand": prism_graph,
+            "shield_verified": list(dict.fromkeys(verified))[:12],
+            "live_channels": inventory.get("vectorprism_live_channels") or 0,
+        },
+        "not_in_the_100": [
+            "VectorPrism 6 channels",
+            "ChorusGraph expand",
+            "Ed25519 signed parameters",
+            "PrismShield verified / unsigned / drifted",
+        ],
+        "talk": talk,
+    }
+
+
 def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
     indexed = indexed_documents(store)
     queries, skipped = planned_probes(store)
@@ -1024,6 +1215,8 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
                         {
                             "quality": quality,
                             "usage": retrieve_cost,
+                            "vectorprism": payload.get("vectorprism"),
+                            "shield": payload.get("shield"),
                             "hits": [
                                 {
                                     "chunk_id": h.get("chunk_id"),
@@ -1032,6 +1225,7 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
                                     "score": h.get("score"),
                                     "preview": (h.get("retrieval_text") or "")[:240],
                                     "channels": h.get("channels"),
+                                    "graph_edge": h.get("graph_edge"),
                                     "shield": h.get("shield"),
                                     "verified_parameters": h.get("verified_parameters"),
                                 }
@@ -1085,6 +1279,8 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
             }
         )
     leaderboard.sort(key=lambda r: r["overall"], reverse=True)
+    inventory = capability_inventory(store)
+    tradeoffs = tradeoff_report(results, inventory)
 
     return {
         "queries": len(queries),
@@ -1138,5 +1334,7 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
         "leaderboard": leaderboard,
         "retrieve_usage": retrieve_usage,
         "bonus": analyze_collection(store),
+        "inventory": inventory,
+        "tradeoffs": tradeoffs,
         "results": results,
     }

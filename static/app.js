@@ -614,7 +614,7 @@ async function runBench() {
             <td>${p.pipeline_id}</td>
             <td><span class="score ${scoreClass(qy.score || 0)}">${qy.score ?? "—"}</span> <span class="meta">nDCG ${qy.ndcg ?? "—"} · MRR ${qy.mrr ?? "—"} · P@5 ${qy.precision ?? "—"}</span></td>
             <td>${p.latency_ms} ms</td>
-            <td class="meta">${esc(p.index_name || "")}${(top && top.channels) ? "<br>ch " + top.channels.join("+") : ""}${p.vectorprism ? "<br>VP " + (p.vectorprism.channels || []).join(", ") : ""}<br>embed queries: ${p.usage?.embed_queries ?? 0} · llm: ${p.usage?.llm_calls ?? 0}</td>
+            <td class="meta">${esc(p.index_name || "")}${(top && top.channels) ? "<br>ch " + top.channels.join("+") : ""}${top && top.graph_edge ? "<br>graph " + esc(top.graph_edge) : ""}${p.vectorprism ? "<br>VP " + (p.vectorprism.channels || []).join(", ") : ""}${p.shield && p.shield.applied ? "<br>Shield " + (p.shield.verified || []).slice(0, 4).join(", ") : ""}<br>embed queries: ${p.usage?.embed_queries ?? 0} · llm: ${p.usage?.llm_calls ?? 0}</td>
             <td>${top ? esc((top.retrieval_text || "").slice(0, 160)) : "—"}</td>
           </tr>
           <tr><td></td><td colspan="4">${renderGrades(qy.grades)}${renderChecks(qy.checks)}</td></tr>`;
@@ -662,6 +662,7 @@ async function runBench() {
     </div>
   `;
   $("benchOut").dataset.filled = "1";
+  renderInventory(data.inventory, data.tradeoffs);
   renderBonus(data.bonus);
 }
 
@@ -825,7 +826,112 @@ function setTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.tab === tab));
   render();
-  if (tab === "bench") loadBonus();
+  if (tab === "bench") {
+    loadCapabilities();
+    loadBonus();
+  }
+}
+
+function dash(value) {
+  if (value == null || value === "" || value === 0) return "—";
+  return value;
+}
+
+function renderInventory(inventory, tradeoffs) {
+  const box = $("indexOut");
+  if (!box) return;
+  if (!inventory || !inventory.pipelines) {
+    box.innerHTML = "";
+    return;
+  }
+  const p = inventory.pipelines;
+  const ch = (p.prism && p.prism.channels) || {};
+  const channelPills = Object.entries(ch)
+    .map(([name, n]) => `<span class="pill ${n ? "prism" : ""}">${esc(name)} ${n}</span>`)
+    .join(" ");
+  const kinds = (tradeoffs && tradeoffs.kind_winners) || [];
+  const kindRows = kinds
+    .map((k) => {
+      const scores = k.scores || {};
+      const mark = (id) => (k.winner === id || (k.tied || []).includes(id) ? " <span class=\"pill\">won</span>" : "");
+      return `<tr>
+        <td>${esc(String(k.kind).replaceAll("_", " "))}</td>
+        <td class="baseline">${scores.baseline ?? "—"}${mark("baseline")}</td>
+        <td class="prism">${scores.prism ?? "—"}${mark("prism")}</td>
+        <td class="relay">${scores.relay ?? "—"}${mark("relay")}</td>
+      </tr>`;
+    })
+    .join("");
+  const used = (tradeoffs && tradeoffs.prism_used) || {};
+  const talk = ((tradeoffs && tradeoffs.talk) || [inventory.note])
+    .map((line) => `<p class="muted">${esc(line)}</p>`)
+    .join("");
+  const usedLine = tradeoffs
+    ? `<div class="meta">This run · numeric ${used.numeric_channel ?? 0}/${used.probes ?? 0} · caption ${used.caption_channel ?? 0}/${used.probes ?? 0} · ChorusGraph ${used.chorusgraph_expand ?? 0}/${used.probes ?? 0}${used.shield_verified && used.shield_verified.length ? " · Shield " + used.shield_verified.join(", ") : ""}</div>`
+    : `<div class="meta">Run the bake-off to see which Prism channels fired on each probe kind.</div>`;
+  box.innerHTML = `
+    <div class="card">
+      <h3>Indexes — what each stack actually built</h3>
+      ${talk}
+      <table class="matrix">
+        <tr>
+          <th></th>
+          <th class="baseline">Baseline</th>
+          <th class="prism">Prism</th>
+          <th class="relay">Relay</th>
+        </tr>
+        <tr>
+          <td>Index</td>
+          <td>${esc(p.baseline.index)}</td>
+          <td class="on">${esc(p.prism.index)}</td>
+          <td>${esc(p.relay.index)}</td>
+        </tr>
+        <tr>
+          <td>Vec tables / vectors</td>
+          <td>${p.baseline.vec_tables.length} / ${p.baseline.vectors}</td>
+          <td class="on">${p.prism.vec_tables.length} / ${p.prism.vectors}</td>
+          <td>${p.relay.vec_tables.length} / ${p.relay.vectors}</td>
+        </tr>
+        <tr>
+          <td>Embeds per chunk</td>
+          <td>${p.baseline.embeddings_per_chunk}</td>
+          <td class="on">${p.prism.embeddings_per_chunk}×</td>
+          <td>${p.relay.embeddings_per_chunk}</td>
+        </tr>
+        <tr>
+          <td>Signed parameters</td>
+          <td class="off">${dash(p.baseline.signed_parameters)}</td>
+          <td class="on">${p.prism.signed_parameters} · ${p.prism.manifests} manifest(s)</td>
+          <td class="off">${dash(p.relay.signed_parameters)}</td>
+        </tr>
+        <tr>
+          <td>ChorusGraph</td>
+          <td class="off">No graph</td>
+          <td class="on">${p.prism.chorusgraph_nodes} nodes · ${p.prism.chorusgraph_edges} edges · ${p.prism.cross_document_edges} cross-doc</td>
+          <td class="off">No graph</td>
+        </tr>
+        <tr>
+          <td>PrismShield</td>
+          <td class="off">Not applied</td>
+          <td class="on">Query-time verified / unsigned / drifted</td>
+          <td class="off">Not applied</td>
+        </tr>
+      </table>
+      <div class="pills" style="margin-top:10px">${channelPills || '<span class="muted">Prism channels empty — run Prism on a PDF.</span>'}</div>
+      ${usedLine}
+      ${kindRows ? `<h4>Who won which exam (not added to the 100)</h4>
+      <table class="compare"><tr><th>Probe kind</th><th>Baseline</th><th>Prism</th><th>Relay</th></tr>${kindRows}</table>` : ""}
+    </div>`;
+}
+
+async function loadCapabilities() {
+  try {
+    const data = await api("/api/capabilities");
+    renderInventory(data.inventory, null);
+    if (data.bonus) renderBonus(data.bonus);
+  } catch {
+    /* Score still works after Run benchmark */
+  }
 }
 
 async function loadBonus() {

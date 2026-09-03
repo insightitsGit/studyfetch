@@ -335,17 +335,16 @@ def write_field_note_pdf(path: Path) -> None:
             "This note commissions the optional transformer attention module on a Nexus-24 industrial "
             "controller running Firmware 3.2. It is the field document. The datasheet lists factory "
             "ratings. The academic paper describes the encoder-decoder attention stack. Operators who "
-            "ask one index a generic “voltage” question will mix these three files. VectorPrism keeps "
-            "the subspaces apart.",
+            "ask a generic “Nexus-24 voltage” question will land on the factory typical. The field "
+            "setpoint is a different bound name.",
             styles["Body"],
         ),
         Paragraph("2 Why a six-channel mix", styles["H1"]),
         Paragraph(
-            "A single semantic channel treats Field Derate Voltage: 22 V as a neighbor of Maximum "
-            "Operating Voltage: 24 V and of the table-max 26 V. The numeric channel must win parameter "
-            "questions. The caption channel must win “show me the six-channel figure.” The entity "
-            "channel must keep Nexus-24, Ortiz, and Firmware 3.2 on this note or the paper — not invent "
-            "a third controller.",
+            "A single semantic channel treats the commissioned field voltage as a neighbor of the "
+            "factory typical and of the table-max. The numeric channel plus the signed parameter table "
+            "must win “what voltage should I commission.” The caption channel must win the panel photo. "
+            "The entity channel must keep Nexus-24, Ortiz, and Firmware 3.2 on this note or the paper.",
             styles["Body"],
         ),
         KeepTogether(
@@ -371,6 +370,7 @@ def write_field_note_pdf(path: Path) -> None:
             styles["Body"],
         ),
         Paragraph("3.2 Commissioned electrical setpoints", styles["H2"]),
+        Paragraph("Field Commissioning Voltage: 22 V", styles["Body"]),
         Paragraph("Field Derate Voltage: 22 V", styles["Body"]),
         Paragraph("Continuous Isolation: 600 V", styles["Body"]),
         Paragraph("Attention Inference Budget: 12 ms", styles["Body"]),
@@ -389,17 +389,17 @@ def write_field_note_pdf(path: Path) -> None:
         ),
         Paragraph("5 Safety", styles["H1"]),
         Paragraph(
-            "Do not set the panel to Maximum Operating Voltage: 24 V. That is the datasheet typical. "
-            "The commissioned setpoint is Field Derate Voltage: 22 V. Isolation Tolerance: 1500 V is "
-            "the factory type-test. Continuous Isolation: 600 V is what the field encoder path is "
-            "rated for after derate. Neighbor digits in Table 4 (20 V / 24 V) are not the typ.",
+            "Do not use the factory typical from the datasheet. The commissioned setpoint is "
+            "Field Commissioning Voltage: 22 V. Isolation Tolerance on the factory type-test is "
+            "not a continuous field rating. Continuous Isolation: 600 V is what the field encoder "
+            "path is rated for after derate. Neighbor digits in Table 4 are not the typ.",
             styles["Body"],
         ),
     ]
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
 
 
-SEED_REVISION = "raster-figure-2"
+SEED_REVISION = "commission-22v"
 FIELD_NOTE_NAME = "nexus24_attention_field_note_seed.pdf"
 
 

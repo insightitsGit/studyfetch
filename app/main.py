@@ -18,7 +18,7 @@ from app.classify import classify_route_from_pages
 from app.pipelines import PIPELINES, REGISTRY, get_pipeline, ingest_pdf, resolve_pdf_path
 from app.progress import ProgressReporter, bind_progress, jobs
 from app.retrieve import retrieve
-from app.benchmark import planned_probes, run_benchmark, seed_queries
+from app.benchmark import capability_inventory, planned_probes, run_benchmark, seed_queries
 from app.bonus import analyze_collection
 from app.seed import seed_corpus
 from app.storage.blobs import blob_store
@@ -334,15 +334,47 @@ def benchmark_plan():
 
 @app.get("/api/samples")
 def sample_queries():
+    """Pinned VectorPrism cases first, then corpus probes. Not the bake-off gold list."""
+    files = {d.get("filename") for d in get_store().fetchall("SELECT filename FROM documents")}
+    pinned = []
+    if any(f and "field_note" in f for f in files):
+        pinned.append(
+            {
+                "query": "What voltage should I commission on the Nexus-24?",
+                "intent": "parameter",
+                "label": "field setpoint",
+            }
+        )
+    if any(f and "datasheet" in f for f in files):
+        pinned.append(
+            {
+                "query": "What is the Maximum Operating Voltage?",
+                "intent": "parameter",
+                "label": "factory max",
+            }
+        )
+        pinned.append(
+            {"query": "What is the Q4 Revenue?", "intent": "financial", "label": "Q4 revenue"}
+        )
+    if len(files) >= 2:
+        pinned.append(
+            {
+                "query": "Where do the documents discuss encoder-decoder?",
+                "intent": "academic",
+                "label": "cross-doc",
+            }
+        )
     queries, _skipped = _current_probes()
-    return [
+    rest = [
         {
             "query": q["query"],
             "intent": q.get("intent") or "",
             "label": (q.get("kind") or "ask").replace("_", " "),
         }
-        for q in queries[:4]
+        for q in queries
+        if q["query"] not in {p["query"] for p in pinned}
     ]
+    return (pinned + rest)[:6]
 
 
 @app.post("/api/benchmark")
@@ -384,6 +416,15 @@ def download_design(design_id: str):
 @app.get("/api/indexes")
 def indexes():
     return get_store().index_stats()
+
+
+@app.get("/api/capabilities")
+def capabilities():
+    store = get_store()
+    return {
+        "inventory": capability_inventory(store),
+        "bonus": analyze_collection(store),
+    }
 
 
 @app.get("/api/graph")

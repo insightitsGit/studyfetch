@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -63,6 +64,7 @@ def retrieve(
         merged, vectorprism = vectorprism_fuse(channel_hits, fts_hits, intent, k)
         extra = _graph_expand(store, merged, document_id=document_id)
         merged = merge_graph_hits(merged, extra)[: k + 2]
+        merged = boost_hits_with_signed_params(store, merged, query)
         if apply_shield:
             merged = PrismShield(store).filter_chunks(merged)
             merged = _annotate_verified_params(store, merged)
@@ -187,6 +189,93 @@ def _attach_page_labels(store: Store, hits: list[dict]) -> None:
         if page is None:
             continue
         h["page_label"] = labels.get((h.get("document_id"), int(page)))
+
+
+_PARAM_WORD = re.compile(r"[a-z0-9]+")
+_PARAM_STOP = {
+    "what", "whatis", "with", "from", "that", "this", "should", "about",
+    "document", "documents", "discuss", "where",
+}
+
+
+def param_name_overlap(query: str, param_name: str) -> int:
+    """Shared content stems between a question and a bound parameter name."""
+    return len(_stems(query) & _stems(param_name))
+
+
+def _stems(text: str) -> set[str]:
+    out: set[str] = set()
+    for raw in _PARAM_WORD.findall((text or "").lower()):
+        if len(raw) < 4 or raw in _PARAM_STOP:
+            continue
+        word = raw
+        if word.endswith("ing") and len(word) > 6:
+            word = word[:-3]
+        elif word.endswith("ed") and len(word) > 5:
+            word = word[:-2]
+        elif word.endswith("s") and len(word) > 4:
+            word = word[:-1]
+        out.add(word)
+    return out
+
+
+def boost_hits_with_signed_params(store: Store, hits: list[dict], query: str) -> list[dict]:
+    """Use the Ed25519 parameter table for ranking, not only Shield labels.
+
+    A hit is boosted when a signed name on that document shares two or more
+    content words with the question (commission+voltage vs maximum+operating).
+    Baseline and Relay never see this table.
+    """
+    if not hits or not (query or "").strip():
+        return hits
+    docs = {h.get("document_id") for h in hits if h.get("document_id")}
+    if not docs:
+        return hits
+    placeholders = ",".join("?" * len(docs))
+    rows = store.fetchall(
+        f"""
+        SELECT document_id, parameter_name, raw_string_value, provenance_page
+        FROM document_parameters
+        WHERE document_id IN ({placeholders})
+          AND COALESCE(manifest_signature, '') != ''
+        """,
+        tuple(docs),
+    )
+    by_doc: dict[str, list[dict]] = {}
+    for row in rows:
+        by_doc.setdefault(row["document_id"], []).append(row)
+    if not by_doc:
+        return hits
+
+    scored = []
+    for hit in hits:
+        item = dict(hit)
+        best = 0
+        matched = None
+        page = item.get("page_start")
+        for param in by_doc.get(item.get("document_id") or "", []):
+            overlap = param_name_overlap(query, param.get("parameter_name") or "")
+            if overlap < 2:
+                continue
+            if page is not None and param.get("provenance_page") == page:
+                overlap += 1
+            if overlap > best:
+                best = overlap
+                matched = param
+        if best >= 2 and matched is not None:
+            item["score"] = float(item.get("score") or 0) + 0.35 * best
+            item["param_boost"] = {
+                "name": matched.get("parameter_name"),
+                "value": matched.get("raw_string_value"),
+                "overlap": best,
+            }
+            chans = list(item.get("channels") or [])
+            if "signed_param" not in chans:
+                chans.append("signed_param")
+            item["channels"] = chans
+        scored.append(item)
+    scored.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+    return scored
 
 
 def merge_graph_hits(merged: list[dict], extra: list[dict]) -> list[dict]:

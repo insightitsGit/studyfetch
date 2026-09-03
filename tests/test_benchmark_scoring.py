@@ -5,6 +5,7 @@ from app.benchmark import (
     generate_probes,
     heading_integrity,
     score_retrieval,
+    tradeoff_report,
 )
 
 
@@ -215,6 +216,60 @@ def test_term_and_caption_rank_have_no_demo_vocabulary_bonus():
     table = _caption_rank("Table 3. Operating limits.")
     assert figure > demo_bag
     assert table > demo_bag
+
+
+def test_tradeoff_report_names_kind_winners_without_changing_scores():
+    results = [
+        {
+            "query": {"kind": "parameter", "query": "voltage"},
+            "pipelines": [
+                {"pipeline_id": "baseline", "quality": {"score": 70}, "hits": []},
+                {
+                    "pipeline_id": "prism",
+                    "quality": {"score": 61},
+                    "hits": [{"channels": ["numeric", "semantic"], "graph_edge": None}],
+                    "vectorprism": {"channels": ["semantic", "numeric"]},
+                    "shield": {"applied": True, "verified": ["22 V"]},
+                },
+                {"pipeline_id": "relay", "quality": {"score": 80}, "hits": []},
+            ],
+        },
+        {
+            "query": {"kind": "cross_document", "query": "encoder"},
+            "pipelines": [
+                {"pipeline_id": "baseline", "quality": {"score": 40}, "hits": []},
+                {
+                    "pipeline_id": "prism",
+                    "quality": {"score": 55},
+                    "hits": [{"channels": ["chorusgraph"], "graph_edge": "overlaps_with"}],
+                    "vectorprism": {"channels": ["semantic"]},
+                    "shield": {"applied": True, "verified": []},
+                },
+                {"pipeline_id": "relay", "quality": {"score": 42}, "hits": []},
+            ],
+        },
+    ]
+    report = tradeoff_report(
+        results,
+        {
+            "vectorprism_live_channels": 6,
+            "pipelines": {
+                "prism": {
+                    "vectors": 84,
+                    "cross_document_edges": 12,
+                    "signed_parameters": 20,
+                }
+            },
+        },
+    )
+    by_kind = {row["kind"]: row for row in report["kind_winners"]}
+    assert by_kind["parameter"]["winner"] == "relay"
+    assert by_kind["cross_document"]["winner"] == "prism"
+    assert report["prism_used"]["numeric_channel"] == 1
+    assert report["prism_used"]["chorusgraph_expand"] == 1
+    assert "22 V" in report["prism_used"]["shield_verified"]
+    assert "VectorPrism 6 channels" in report["not_in_the_100"]
+    assert any("not added" in line.lower() for line in report["talk"])
 
 
 def test_heading_integrity_does_not_need_a_named_pdf():
