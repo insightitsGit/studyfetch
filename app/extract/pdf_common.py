@@ -419,10 +419,22 @@ def attach_captions(assets: list[dict[str, Any]], blocks: list[TextBlock]) -> No
         by_page[b.page].append(b)
     for asset in assets:
         page = asset["page_number"]
+        kind = (asset.get("asset_type") or "").lower()
+        picked = ""
         for b in by_page.get(page, []):
-            if caption_re.match(b.text.strip()):
-                asset["caption"] = b.text.strip()[:240]
-                break
+            line = (b.text or "").strip().splitlines()[0].strip() if (b.text or "").strip() else ""
+            match = caption_re.match(line)
+            if not match:
+                continue
+            label = match.group(1).lower()
+            if kind == "figure" and label == "table":
+                continue
+            if kind == "table" and label in {"figure", "fig."}:
+                continue
+            picked = line[:240]
+            break
+        if picked:
+            asset["caption"] = picked
 
 
 def extract_tables_plumber(path: str, document_id: str) -> list[dict[str, Any]]:

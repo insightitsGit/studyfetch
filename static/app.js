@@ -641,7 +641,7 @@ async function runBench() {
         </tr>
         ${boardRows}
       </table>
-      <p class="muted">${esc(data.rubric?.document_understanding || "")}. ${esc(data.rubric?.system_design || "")}</p>
+      <p class="muted">${esc(data.note || "")} ${esc(data.rubric?.document_understanding || "")}. ${esc(data.rubric?.system_design || "")}</p>
     </div>
     <div class="card">
       <h3>Model / OCR / embed calls (latest successful run per document)</h3>

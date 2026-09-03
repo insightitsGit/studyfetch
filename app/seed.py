@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 from reportlab.lib import colors
@@ -7,6 +8,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    Image,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -17,8 +19,6 @@ from reportlab.platypus import (
 from reportlab.graphics.shapes import Drawing, Rect, String, Line
 
 from app.config import settings
-from app.db.store import Store
-from app.pipelines.base import ingest_pdf
 
 
 def _styles():
@@ -232,25 +232,215 @@ def write_datasheet_pdf(path: Path) -> None:
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
 
 
+def _nexus_panel_png() -> BytesIO:
+    """Raster figure so Outline can show a detected image (vector drawings do not extract)."""
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+
+    img = PILImage.new("RGB", (860, 400), "#0b1220")
+    draw = ImageDraw.Draw(img)
+    try:
+        title_font = ImageFont.truetype("arial.ttf", 28)
+        body_font = ImageFont.truetype("arial.ttf", 18)
+        small_font = ImageFont.truetype("arial.ttf", 14)
+    except OSError:
+        title_font = body_font = small_font = ImageFont.load_default()
+    draw.rounded_rectangle((24, 24, 836, 376), radius=22, fill="#1e293b", outline="#38bdf8", width=4)
+    draw.rounded_rectangle((56, 56, 400, 250), radius=10, fill="#020617", outline="#22c55e", width=3)
+    draw.text((76, 76), "NEXUS-24", fill="#e2e8f0", font=title_font)
+    draw.text((76, 124), "HMI  ·  Firmware 3.2", fill="#93c5fd", font=body_font)
+    draw.text((76, 176), "FIELD DERATE   22 V", fill="#86efac", font=title_font)
+    draw.text((76, 220), "ISO CONTINUOUS   600 V", fill="#fcd34d", font=body_font)
+    draw.rounded_rectangle((440, 56, 800, 250), radius=10, fill="#312e81", outline="#c4b5fd", width=3)
+    draw.text((460, 76), "ENCODER", fill="#f5f3ff", font=title_font)
+    draw.text((460, 124), "attention module", fill="#ddd6fe", font=body_font)
+    draw.text((460, 168), "Q  →  K  →  V", fill="#fde68a", font=body_font)
+    draw.text((460, 208), "behind the panel HMI", fill="#c4b5fd", font=small_font)
+    draw.rectangle((56, 280, 800, 344), fill="#0f172a", outline="#64748b", width=2)
+    draw.text((76, 300), "Photo plate  ·  field commissioning  ·  AN-24-07", fill="#cbd5e1", font=body_font)
+    buf = BytesIO()
+    buf.name = "nexus_panel.png"
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def write_field_note_pdf(path: Path) -> None:
+    """Third seed: same world as the paper + datasheet, built to show VectorPrism 6ch."""
+    styles = _styles()
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=letter,
+        title="Nexus-24 Application Note AN-24-07 — Attention Module Field Commissioning",
+        author="Nexus Instruments Field Engineering",
+        leftMargin=inch,
+        rightMargin=inch,
+        topMargin=0.8 * inch,
+        bottomMargin=0.7 * inch,
+    )
+    mix = [
+        ["Channel", "Role on the panel", "Parameter-intent weight"],
+        ["semantic", "Runbook prose", "0.16"],
+        ["structural", "Heading path 3.1 Field Encoder", "0.18"],
+        ["title", "AN-24-07 / Field Derate", "0.10"],
+        ["entity", "Nexus-24, Ortiz, Firmware 3.2", "0.08"],
+        ["numeric", "22 V derate, not 24 V typ", "0.38"],
+        ["caption", "Figure 2 six-channel mix", "0.10"],
+    ]
+    mix_table = Table(mix, colWidths=[1.3 * inch, 3.1 * inch, 1.8 * inch])
+    mix_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4c1d95")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#a78bfa")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f3ff")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    derate = [
+        ["Parameter", "Min", "Typ", "Max", "Unit"],
+        ["Field Derate Voltage", "20", "22", "24", "V"],
+        ["Continuous Isolation", "400", "600", "800", "V"],
+        ["Attention Inference Budget", "8", "12", "16", "ms"],
+    ]
+    derate_table = Table(derate, colWidths=[2.2 * inch, 0.8 * inch, 0.8 * inch, 0.8 * inch, 0.8 * inch])
+    derate_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#14532d")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#86efac")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f0fdf4")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ]
+        )
+    )
+    story = [
+        Paragraph(
+            "Nexus-24 Application Note AN-24-07 — Attention Module Field Commissioning",
+            styles["DocTitle"],
+        ),
+        Paragraph(
+            "Nexus Instruments Field Engineering. Companion to the Ortiz / Nair / Chen attention-routing "
+            "technical report and the Nexus-24 Q4 datasheet.",
+            styles["Body"],
+        ),
+        Paragraph("1 Purpose", styles["H1"]),
+        Paragraph(
+            "This note commissions the optional transformer attention module on a Nexus-24 industrial "
+            "controller running Firmware 3.2. It is the field document. The datasheet lists factory "
+            "ratings. The academic paper describes the encoder-decoder attention stack. Operators who "
+            "ask one index a generic “voltage” question will mix these three files. VectorPrism keeps "
+            "the subspaces apart.",
+            styles["Body"],
+        ),
+        Paragraph("2 Why a six-channel mix", styles["H1"]),
+        Paragraph(
+            "A single semantic channel treats Field Derate Voltage: 22 V as a neighbor of Maximum "
+            "Operating Voltage: 24 V and of the table-max 26 V. The numeric channel must win parameter "
+            "questions. The caption channel must win “show me the six-channel figure.” The entity "
+            "channel must keep Nexus-24, Ortiz, and Firmware 3.2 on this note or the paper — not invent "
+            "a third controller.",
+            styles["Body"],
+        ),
+        KeepTogether(
+            [
+                Image(_nexus_panel_png(), width=5.8 * inch, height=2.7 * inch),
+                Paragraph(
+                    "Figure 2. Nexus-24 attention module behind the HMI (field derate 22 V).",
+                    styles["Caption"],
+                ),
+            ]
+        ),
+        Paragraph("Table 3. Parameter-intent channel weights used on the panel retriever.", styles["Caption"]),
+        mix_table,
+        Spacer(1, 10),
+        Paragraph("3 Field Encoder Path", styles["H1"]),
+        Paragraph("3.1 Field Encoder Path", styles["H2"]),
+        Paragraph(
+            "The encoder maps the commissioned runbook the same way section 3.1 of the academic paper "
+            "maps a study PDF: Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V. Head Count: 6. "
+            "Embedding Dimension: 384. Multi-head routing on the panel is the industrial version of "
+            "the paper's heading / table / caption heads. Do not retrieve the paper's toy latency "
+            "row (40 ms / 48 ms / 62 ms) as the field budget.",
+            styles["Body"],
+        ),
+        Paragraph("3.2 Commissioned electrical setpoints", styles["H2"]),
+        Paragraph("Field Derate Voltage: 22 V", styles["Body"]),
+        Paragraph("Continuous Isolation: 600 V", styles["Body"]),
+        Paragraph("Attention Inference Budget: 12 ms", styles["Body"]),
+        Paragraph("Head Count: 6", styles["Body"]),
+        Paragraph("Embedding Dimension: 384", styles["Body"]),
+        Paragraph("Table 4. Field derate limits (not the datasheet factory table).", styles["Caption"]),
+        derate_table,
+        Spacer(1, 10),
+        Paragraph("4 Cross-document map", styles["H1"]),
+        Paragraph(
+            "Queries about the encoder-decoder attention stack used in industrial controllers should "
+            "surface this note, the paper's 3.1 Encoder and Decoder Stacks, and the datasheet Firmware "
+            "Notes. That is ChorusGraph, not a bigger chunk. Q4 Revenue: $1,042,500 stays on the "
+            "datasheet — this bulletin has no commercial metrics.",
+            styles["Body"],
+        ),
+        Paragraph("5 Safety", styles["H1"]),
+        Paragraph(
+            "Do not set the panel to Maximum Operating Voltage: 24 V. That is the datasheet typical. "
+            "The commissioned setpoint is Field Derate Voltage: 22 V. Isolation Tolerance: 1500 V is "
+            "the factory type-test. Continuous Isolation: 600 V is what the field encoder path is "
+            "rated for after derate. Neighbor digits in Table 4 (20 V / 24 V) are not the typ.",
+            styles["Body"],
+        ),
+    ]
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+
+
+SEED_REVISION = "raster-figure-2"
+FIELD_NOTE_NAME = "nexus24_attention_field_note_seed.pdf"
+
+
 def ensure_seed_pdfs() -> list[Path]:
     settings.ensure_dirs()
-    academic = settings.seed_dir / "attention_routing_seed.pdf"
-    datasheet = settings.seed_dir / "nexus24_datasheet_seed.pdf"
-    if not academic.exists():
-        write_academic_pdf(academic)
-    if not datasheet.exists():
-        write_datasheet_pdf(datasheet)
-    return [academic, datasheet]
+    marker = settings.seed_dir / ".revision"
+    stale = (not marker.exists()) or marker.read_text(encoding="utf-8").strip() != SEED_REVISION
+    specs = [
+        (settings.seed_dir / "attention_routing_seed.pdf", write_academic_pdf),
+        (settings.seed_dir / "nexus24_datasheet_seed.pdf", write_datasheet_pdf),
+        (settings.seed_dir / FIELD_NOTE_NAME, write_field_note_pdf),
+    ]
+    paths = []
+    for path, writer in specs:
+        if not path.exists() or (stale and path.name == FIELD_NOTE_NAME):
+            writer(path)
+        paths.append(path)
+    if stale:
+        marker.write_text(SEED_REVISION, encoding="utf-8")
+    return paths
 
 
-def seed_corpus(store: Store) -> list[dict]:
-    ensure_seed_pdfs()
-    existing = store.fetchall("SELECT * FROM documents")
-    if existing:
-        return existing
+def seed_corpus(store) -> list[dict]:
+    from app.pipelines.base import ingest_pdf
+    from app.storage.blobs import sha256_bytes
+
+    paths = ensure_seed_pdfs()
+    existing = {d["filename"]: d for d in store.fetchall("SELECT * FROM documents")}
     docs = []
-    for path in ensure_seed_pdfs():
+    for path in paths:
         data = path.read_bytes()
-        doc = ingest_pdf(store, path.name, data)
-        docs.append(doc)
+        digest = sha256_bytes(data)
+        old = existing.get(path.name)
+        if old and old.get("sha256") == digest:
+            docs.append(old)
+            continue
+        if old:
+            store.delete_document(old["id"])
+        docs.append(ingest_pdf(store, path.name, data))
+    known = {d["filename"] for d in docs}
+    for doc in existing.values():
+        if doc["filename"] not in known:
+            docs.append(doc)
     return docs

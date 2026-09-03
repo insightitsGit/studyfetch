@@ -29,6 +29,14 @@ STOP = {
     "abstract", "appendix", "contents", "index",
 }
 
+# Extractor / page-label leftovers must never become a probe.
+NOISE = STOP | {
+    "digital", "digitally", "generated", "textbooks", "pymupdf", "pdfplumber",
+    "tesseract", "reportlab", "helvetica", "times", "low_text", "table_heavy",
+    "figure_heavy", "scanned", "label", "preview", "method", "methods",
+    "paragraph", "heading", "body", "normal", "title",
+}
+
 BOILERPLATE_NEEDLES = (
     "confidential draft",
     "headers repeat",
@@ -53,7 +61,94 @@ def corpus_from_store(store: Store) -> dict[str, Any]:
         "SELECT document_id, page_number, text_preview, label FROM pages ORDER BY document_id, page_number"
     )
     assets = store.fetchall("SELECT document_id, caption, extra_json FROM assets")
+    # Relay used to overwrite preview with "digital_text / pymupdf:2". Prefer real chunk text.
+    chunks = store.fetchall("SELECT document_id, page_start, text FROM chunks")
+    by_page: dict[tuple[str, int], list[str]] = defaultdict(list)
+    by_doc: dict[str, list[str]] = defaultdict(list)
+    for chunk in chunks:
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            continue
+        page = int(chunk.get("page_start") or 1)
+        by_page[(chunk["document_id"], page)].append(text)
+        by_doc[chunk["document_id"]].append(text)
+    for page in pages:
+        preview = page.get("text_preview") or ""
+        if _looks_like_extractor_meta(preview) or len(preview) < 80:
+            filled = "\n".join(by_page.get((page["document_id"], page["page_number"]), []))
+            if not filled:
+                filled = "\n".join(by_doc.get(page["document_id"], []))
+            if filled:
+                page["text_preview"] = filled[:4000]
     return {"documents": docs, "pages": pages, "assets": assets}
+
+
+def _looks_like_extractor_meta(preview: str) -> bool:
+    text = (preview or "").lower()
+    if not text:
+        return True
+    return any(token in text for token in ("pymupdf", "pdfplumber", "tesseract", "low_text", "table_heavy")) and len(text) < 240
+
+
+def indexed_documents(store: Store) -> dict[str, set[str]]:
+    covered: dict[str, set[str]] = {p: set() for p in PIPELINES}
+    for row in store.fetchall("SELECT DISTINCT pipeline_id, document_id FROM chunks"):
+        covered.setdefault(row["pipeline_id"], set()).add(row["document_id"])
+    return covered
+
+
+def probe_doc_ids(probe: dict[str, Any]) -> list[str]:
+    ids = []
+    if probe.get("document_id"):
+        ids.append(probe["document_id"])
+    ids.extend(probe.get("require_document_ids") or [])
+    return [i for i in ids if i]
+
+
+def filter_fair_probes(
+    probes: list[dict[str, Any]], indexed: dict[str, set[str]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Drop probes whose gold docs are missing from any pipeline index."""
+    kept, skipped = [], []
+    for probe in probes:
+        needed = probe_doc_ids(probe)
+        if not needed:
+            kept.append(probe)
+            continue
+        missing = {
+            pipe: [doc for doc in needed if doc not in docs]
+            for pipe, docs in indexed.items()
+            if any(doc not in docs for doc in needed)
+        }
+        if missing:
+            skipped.append({**probe, "skipped_because": missing})
+        else:
+            kept.append(probe)
+    return kept, skipped
+
+
+def _content_term(term: str) -> bool:
+    word = (term or "").lower()
+    if len(word) < 6 or word in NOISE:
+        return False
+    if word.isdigit():
+        return False
+    return True
+
+
+def _term_quality(term: str) -> int:
+    """Structural distinctiveness only — no product or demo-word list."""
+    word = (term or "").strip()
+    if not _content_term(word):
+        return -1
+    score = min(len(word), 18)
+    if word[:1].isupper():
+        score += 2
+    if any(c.isupper() for c in word[1:]) and not word.isupper():
+        score += 1
+    if "-" in word or any(c.isdigit() for c in word):
+        score += 1
+    return score
 
 
 def generate_probes(
@@ -141,19 +236,24 @@ def _add_parameter_probes(add, documents, pages_by_doc, names, files, other_ids)
         key = name.lower()
         if key in seen_names:
             continue
-        # Prefer facts that live in one document so the gold doc is unambiguous.
-        owners = {p["document_id"] for p in harvested if (p.get("parameter_name") or "").lower() == key}
+        # Gold is (name, value) in one document. Same name in two files is OK
+        # when the values differ (22 V field derate vs 24 V factory max).
+        owners = {
+            p["document_id"]
+            for p in harvested
+            if (p.get("parameter_name") or "").lower() == key
+            and (p.get("raw_string_value") or "").strip() == raw
+        }
         if len(owners) != 1:
             continue
         seen_names.add(key)
         neighbors = [
             p.get("raw_string_value")
             for p in harvested
-            if p["document_id"] == param["document_id"]
-            and (p.get("unit") or "") == (param.get("unit") or "")
+            if (p.get("unit") or "") == (param.get("unit") or "")
             and (p.get("raw_string_value") or "") != raw
         ]
-        neighbors = [n for n in neighbors if n][:2]
+        neighbors = list(dict.fromkeys(n for n in neighbors if n))[:3]
         intent = "financial" if (param.get("unit") or "").upper() in {"USD", "$"} or raw.startswith("$") else "parameter"
         doc_id = param["document_id"]
         add(
@@ -178,13 +278,16 @@ def _add_parameter_probes(add, documents, pages_by_doc, names, files, other_ids)
 
 
 def _param_weight(param: dict) -> int:
-    name = (param.get("parameter_name") or "").lower()
+    """Prefer named, unit-bearing facts. No domain vocabulary list."""
+    name = (param.get("parameter_name") or "").strip()
+    raw = (param.get("raw_string_value") or "").strip()
     score = 0
-    if not name.startswith("metric_"):
+    if not name.lower().startswith("metric_"):
         score += 4
-    if any(w in name for w in ("maximum", "minimum", "typical", "nominal", "peak", "revenue", "isolation", "voltage", "current", "timeout", "sold", "price")):
-        score += 3
-    if param.get("unit") in {"V", "A", "W", "USD", "$", "ms"}:
+    score += min(len(name), 28) // 4
+    if param.get("unit"):
+        score += 2
+    if raw.startswith("$"):
         score += 1
     return score
 
@@ -252,10 +355,10 @@ def _add_term_probes(add, documents, pages_by_doc, names, files, other_ids) -> N
     candidates = []
     for doc in documents:
         for term, tf in counts.get(doc["id"], {}).items():
-            if df[term] != 1 or tf < 1 or len(term) < 5:
+            if df[term] != 1 or tf < 1 or not _content_term(term):
                 continue
             original = _original_casing(pages_by_doc.get(doc["id"], []), term)
-            candidates.append((-len(term), -tf, term, original, doc["id"]))
+            candidates.append((-_term_quality(original), -tf, term, original, doc["id"]))
     candidates.sort()
     seen_docs: set[str] = set()
     for _, _, term, original, doc_id in candidates:
@@ -296,7 +399,7 @@ def _add_cross_doc_probes(add, documents, pages_by_doc, names, files) -> None:
     shared: dict[str, list[str]] = defaultdict(list)
     for doc in documents:
         for term, tf in counts.get(doc["id"], {}).items():
-            if tf >= 1 and len(term) >= 6:
+            if tf >= 1 and _content_term(term):
                 shared[term].append(doc["id"])
     pairs = []
     for term, owners in shared.items():
@@ -304,7 +407,7 @@ def _add_cross_doc_probes(add, documents, pages_by_doc, names, files) -> None:
         if len(uniq) < 2:
             continue
         pairs.append((term, uniq[:3]))
-    pairs.sort(key=lambda x: (-len(x[0]), x[0]))
+    pairs.sort(key=lambda x: (-_term_quality(x[0]), -len(x[1]), x[0]))
     added = 0
     used_docs: set[tuple[str, ...]] = set()
     for term, owners in pairs:
@@ -319,7 +422,7 @@ def _add_cross_doc_probes(add, documents, pages_by_doc, names, files) -> None:
             {
                 "kind": "cross_document",
                 "intent": "academic",
-                "query": f"{original} discussed across the library",
+                "query": f"Where do the documents discuss {original}?",
                 "notes": (
                     f"“{original}” appears in {len(owners)} documents. "
                     "A single-doc top-k is partial credit."
@@ -337,27 +440,48 @@ def _add_cross_doc_probes(add, documents, pages_by_doc, names, files) -> None:
         added += 1
 
 
+def _caption_text(asset: dict) -> str:
+    caption = (asset.get("caption") or "").strip()
+    if len(caption) >= 8:
+        return caption
+    extra = asset.get("extra_json")
+    if isinstance(extra, str) and extra:
+        try:
+            extra = json.loads(extra)
+        except json.JSONDecodeError:
+            extra = {}
+    if isinstance(extra, dict):
+        headers = extra.get("headers") or []
+        caption = " ".join(str(h) for h in headers if h).strip()
+    return caption
+
+
+def _caption_rank(caption: str) -> int:
+    """Prefer labeled figures/tables. No product-name boost."""
+    text = (caption or "").strip()
+    low = text.lower()
+    if re.match(r"^(figure|fig\.)\b", low):
+        return 40 + min(len(text), 80)
+    if re.match(r"^(table|diagram|chart)\b", low):
+        return 28 + min(len(text), 80)
+    return min(len(text), 40)
+
+
 def _add_caption_probes(add, assets, names, files, other_ids) -> None:
-    added = 0
+    ranked = []
     for asset in assets:
-        if added >= 1:
-            break
-        caption = (asset.get("caption") or "").strip()
-        if len(caption) < 8:
-            extra = asset.get("extra_json")
-            if isinstance(extra, str) and extra:
-                try:
-                    extra = json.loads(extra)
-                except json.JSONDecodeError:
-                    extra = {}
-            if isinstance(extra, dict):
-                headers = extra.get("headers") or []
-                caption = " ".join(str(h) for h in headers if h).strip()
+        caption = _caption_text(asset)
         if len(caption) < 8:
             continue
-        words = [w for w in WORD_RE.findall(caption) if w.lower() not in STOP]
+        words = [w for w in WORD_RE.findall(caption) if _content_term(w)]
         if not words:
             continue
+        ranked.append((_caption_rank(caption), caption, words, asset))
+    ranked.sort(key=lambda row: (-row[0], -len(row[1])))
+    added = 0
+    for _, caption, words, asset in ranked:
+        if added >= 1:
+            break
         doc_id = asset["document_id"]
         add(
             {
@@ -376,14 +500,19 @@ def _add_caption_probes(add, assets, names, files, other_ids) -> None:
         added += 1
 
 
+def planned_probes(store: Store) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    corpus = corpus_from_store(store)
+    raw = generate_probes(corpus["documents"], corpus["pages"], corpus["assets"])
+    return filter_fair_probes(raw, indexed_documents(store))
+
+
 def seed_queries(store: Store) -> list[dict[str, Any]]:
     _ensure_gold_column(store)
-    corpus = corpus_from_store(store)
-    probes = generate_probes(corpus["documents"], corpus["pages"], corpus["assets"])
-    ids = [p["id"] for p in probes] or ["_none"]
+    kept, _skipped = planned_probes(store)
+    ids = [p["id"] for p in kept] or ["_none"]
     placeholders = ",".join("?" * len(ids))
     store.conn.execute(f"DELETE FROM benchmark_queries WHERE id NOT IN ({placeholders})", ids)
-    for p in probes:
+    for p in kept:
         store.conn.execute(
             """
             INSERT OR REPLACE INTO benchmark_queries (id, query, intent, notes, gold_json)
@@ -392,7 +521,7 @@ def seed_queries(store: Store) -> list[dict[str, Any]]:
             (p["id"], p["query"], p.get("intent"), p.get("notes"), json.dumps(p)),
         )
     store.conn.commit()
-    return probes
+    return kept
 
 
 def _gold(query_row: dict[str, Any]) -> dict[str, Any]:
@@ -679,8 +808,12 @@ def heading_integrity(sections: list[dict], page_count: int) -> float:
     return round(0.40 * title_score + 0.25 * hierarchy + 0.20 * cover + 0.15 * unique_ratio, 3)
 
 
-def structure_quality(store: Store, pipeline_id: str) -> dict[str, Any]:
+def structure_quality(
+    store: Store, pipeline_id: str, only_document_ids: set[str] | None = None
+) -> dict[str, Any]:
     docs = store.fetchall("SELECT id, filename, page_count FROM documents")
+    if only_document_ids is not None:
+        docs = [d for d in docs if d["id"] in only_document_ids]
     per_doc = []
     for doc in docs:
         sections = store.fetchall(
@@ -845,7 +978,16 @@ def cost_rollup(store: Store) -> list[dict[str, Any]]:
 
 
 def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
-    queries = seed_queries(store)
+    indexed = indexed_documents(store)
+    queries, skipped = planned_probes(store)
+    seed_queries(store)
+    covered = [docs for docs in indexed.values() if docs]
+    if len(covered) >= 2:
+        common_docs = set.intersection(*covered)
+    elif covered:
+        common_docs = set(covered[0])
+    else:
+        common_docs = set()
     results = []
     retrieve_usage = []
     for q in queries:
@@ -915,7 +1057,7 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
         results.append({"query": {**q, **shown}, "pipelines": per_pipeline})
     store.conn.commit()
 
-    structure = [structure_quality(store, p) for p in PIPELINES]
+    structure = [structure_quality(store, p, common_docs or None) for p in PIPELINES]
     struct_by = {s["pipeline_id"]: s for s in structure}
     quality_by_pipeline: dict[str, list[dict]] = {p: [] for p in PIPELINES}
     for block in results:
@@ -948,6 +1090,24 @@ def run_benchmark(store: Store, k: int = 5) -> dict[str, Any]:
         "queries": len(queries),
         "pipelines": list(PIPELINES),
         "index_stats": store.index_stats(),
+        "coverage": {pipe: sorted(docs) for pipe, docs in indexed.items()},
+        "skipped_probes": [
+            {
+                "id": q.get("id"),
+                "kind": q.get("kind"),
+                "query": q.get("query"),
+                "skipped_because": q.get("skipped_because"),
+            }
+            for q in skipped
+        ],
+        "note": (
+            "Leaderboard only uses probes whose gold documents are indexed by every pipeline. "
+            + (
+                f"Skipped {len(skipped)} probe(s) because an index is incomplete."
+                if skipped
+                else "All generated probes were comparable."
+            )
+        ),
         "probe_plan": [
             {
                 "id": q["id"],

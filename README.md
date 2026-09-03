@@ -11,7 +11,7 @@ Azure Container Apps (eastus). Seeds are indexed on first boot. No auth. Contain
 | **Prism** | [DESIGN_02](docs/DESIGN_02_PRISM.md) | VectorPrism **6ch** (`semantic`, `structural`, `title`, `entity`, `numeric`, `caption`) + FTS5 + ChorusGraph |
 | **Relay** | [DESIGN_03](docs/DESIGN_03_RELAY.md) | `vec_relay` + FTS5 |
 
-Seeds (academic paper + Nexus-24 datasheet) load on first boot. Upload or Remove PDFs anytime.
+Seeds load on first boot: academic paper, Nexus-24 datasheet, and field note AN-24-07 (same world, different numbers — the VectorPrism demo). Upload or Remove PDFs anytime.
 
 ## Architecture
 

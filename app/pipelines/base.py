@@ -109,6 +109,9 @@ def ingest_pdf(store: Store, filename: str, data: bytes) -> dict[str, Any]:
             "created_at": utcnow(),
         }
     )
+    text_by_page: dict[int, list[str]] = {}
+    for block in blocks:
+        text_by_page.setdefault(block.page, []).append(block.text)
     store.replace_pages(
         document_id,
         [
@@ -129,7 +132,7 @@ def ingest_pdf(store: Store, filename: str, data: bytes) -> dict[str, Any]:
                         "image_count": p.image_count,
                     }
                 ),
-                "text_preview": "",
+                "text_preview": "\n".join(text_by_page.get(p.page_number, []))[:4000],
             }
             for p in profiles
         ],

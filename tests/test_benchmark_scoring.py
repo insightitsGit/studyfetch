@@ -1,4 +1,11 @@
-from app.benchmark import generate_probes, heading_integrity, score_retrieval
+from app.benchmark import (
+    _caption_rank,
+    _term_quality,
+    filter_fair_probes,
+    generate_probes,
+    heading_integrity,
+    score_retrieval,
+)
 
 
 def _hit(filename, text, **extra):
@@ -74,6 +81,8 @@ def test_cross_document_probe_requires_shared_owners():
     cross = [p for p in probes if p.get("kind") == "cross_document"]
     assert cross
     assert set(cross[0]["require_document_ids"]) == {"a", "b"}
+    assert "industrial controller" not in cross[0]["query"].lower()
+    assert "vectorprism" not in " ".join(p["query"] for p in probes).lower()
 
 
 def test_hit_at_1_uses_retrieval_text_not_body():
@@ -137,6 +146,75 @@ def test_distractor_first_is_not_a_perfect_score():
     assert distracted["mrr"] < perfect["mrr"]
     assert distracted["ndcg"] < perfect["ndcg"]
     assert perfect["score"] < 100
+
+
+def test_same_parameter_name_different_values_make_two_probes():
+    docs = [
+        {"id": "factory", "filename": "factory.pdf", "title": "Factory", "page_count": 1},
+        {"id": "field", "filename": "field.pdf", "title": "Field", "page_count": 1},
+    ]
+    pages = [
+        {
+            "document_id": "factory",
+            "page_number": 1,
+            "text_preview": "Maximum Operating Voltage: 24 V\nPeak Power: 36 W",
+            "label": "table_heavy",
+        },
+        {
+            "document_id": "field",
+            "page_number": 1,
+            "text_preview": "Field Derate Voltage: 22 V\nDo not use Maximum Operating Voltage: 24 V",
+            "label": "table_heavy",
+        },
+    ]
+    probes = generate_probes(docs, pages, [])
+    params = [p for p in probes if p.get("kind") == "parameter"]
+    values = {tuple(p.get("must_contain") or []) for p in params}
+    assert ("22 V",) in values
+    names = " ".join(p["query"] for p in params).lower()
+    assert "field derate" in names or "22 v" in " ".join(str(p.get("must_contain")) for p in params).lower()
+    assert "pymupdf" not in " ".join(p["query"] for p in probes).lower()
+    assert "digital" not in " ".join(p["query"] for p in probes).lower()
+
+
+def test_extractor_labels_are_not_unique_terms():
+    docs = [
+        {"id": "a", "filename": "a.pdf", "title": "A", "page_count": 1},
+        {"id": "b", "filename": "b.pdf", "title": "B", "page_count": 1},
+    ]
+    pages = [
+        {"document_id": "a", "page_number": 1, "text_preview": "digital_text / pymupdf:2", "label": "digital_text"},
+        {"document_id": "b", "page_number": 1, "text_preview": "digital_text / pymupdf:1", "label": "digital_text"},
+    ]
+    probes = generate_probes(docs, pages, [])
+    blob = " ".join(p["query"] for p in probes).lower()
+    assert "pymupdf" not in blob
+    assert "digital" not in blob
+
+
+def test_fair_filter_drops_probes_missing_from_a_pipeline():
+    probes = [
+        {"id": "q1", "query": "field derate", "document_id": "field"},
+        {"id": "q2", "query": "paper only", "document_id": "paper"},
+    ]
+    indexed = {
+        "baseline": {"field"},
+        "prism": {"field"},
+        "relay": {"field", "paper"},
+    }
+    kept, skipped = filter_fair_probes(probes, indexed)
+    assert [p["id"] for p in kept] == ["q1"]
+    assert [p["id"] for p in skipped] == ["q2"]
+
+
+def test_term_and_caption_rank_have_no_demo_vocabulary_bonus():
+    assert _term_quality("Apoapsis") >= _term_quality("attention")
+    assert _term_quality("Kalman") >= _term_quality("nexus")
+    figure = _caption_rank("Figure 2. Calibration curve for sample 14.")
+    demo_bag = _caption_rank("vectorprism six-channel nexus derate encoder")
+    table = _caption_rank("Table 3. Operating limits.")
+    assert figure > demo_bag
+    assert table > demo_bag
 
 
 def test_heading_integrity_does_not_need_a_named_pdf():

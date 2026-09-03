@@ -18,7 +18,7 @@ from app.classify import classify_route_from_pages
 from app.pipelines import PIPELINES, REGISTRY, get_pipeline, ingest_pdf, resolve_pdf_path
 from app.progress import ProgressReporter, bind_progress, jobs
 from app.retrieve import retrieve
-from app.benchmark import corpus_from_store, generate_probes, run_benchmark, seed_queries
+from app.benchmark import planned_probes, run_benchmark, seed_queries
 from app.bonus import analyze_collection
 from app.seed import seed_corpus
 from app.storage.blobs import blob_store
@@ -60,17 +60,21 @@ async def lifespan(app: FastAPI):
         warmup()
     except Exception as exc:
         print(f"[startup] embedding warmup failed: {exc}")
-    existing = store.fetchone("SELECT id FROM pipeline_runs WHERE status='ok' LIMIT 1")
-    if not existing:
-        print("[startup] indexing seed documents through baseline, prism, and relay…")
-        for doc in docs:
-            pdf_path = resolve_pdf_path(store, doc["id"])
-            for name in PIPELINES:
-                try:
-                    get_pipeline(name, store).run(doc["id"], pdf_path)
-                    print(f"[startup] {name} finished {doc['filename']}")
-                except Exception as exc:
-                    print(f"[startup] {name} failed on {doc['filename']}: {exc}")
+    print("[startup] indexing any document missing a successful pipeline run…")
+    for doc in docs:
+        pdf_path = resolve_pdf_path(store, doc["id"])
+        for name in PIPELINES:
+            done = store.fetchone(
+                "SELECT id FROM pipeline_runs WHERE document_id=? AND pipeline_id=? AND status='ok' LIMIT 1",
+                (doc["id"], name),
+            )
+            if done:
+                continue
+            try:
+                get_pipeline(name, store).run(doc["id"], pdf_path)
+                print(f"[startup] {name} finished {doc['filename']}")
+            except Exception as exc:
+                print(f"[startup] {name} failed on {doc['filename']}: {exc}")
     seed_queries(store)
     yield
     store.close()
@@ -295,13 +299,13 @@ def query_index(body: QueryBody):
 
 
 def _current_probes():
-    corpus = corpus_from_store(get_store())
-    return generate_probes(corpus["documents"], corpus["pages"], corpus["assets"])
+    kept, skipped = planned_probes(get_store())
+    return kept, skipped
 
 
 @app.get("/api/benchmark/plan")
 def benchmark_plan():
-    queries = _current_probes()
+    queries, skipped = _current_probes()
     return {
         "queries": len(queries),
         "probes": [
@@ -316,13 +320,21 @@ def benchmark_plan():
             }
             for q in queries
         ],
-        "note": "Probes are rebuilt from the current library each run. Nothing is hardcoded to a seed PDF.",
+        "skipped_probes": [
+            {"query": q.get("query"), "kind": q.get("kind"), "skipped_because": q.get("skipped_because")}
+            for q in skipped
+        ],
+        "note": (
+            "Probes come from the current library. "
+            "Only questions whose gold documents are indexed by every pipeline are scored."
+            + (f" {len(skipped)} probe(s) skipped because an index is incomplete." if skipped else "")
+        ),
     }
 
 
 @app.get("/api/samples")
 def sample_queries():
-    queries = _current_probes()
+    queries, _skipped = _current_probes()
     return [
         {
             "query": q["query"],

@@ -199,8 +199,8 @@ class RelayPipeline(Pipeline):
             # Persist page labels used by this run
             for p in profiles:
                 self.store.conn.execute(
-                    "UPDATE pages SET label=?, text_preview=? WHERE document_id=? AND page_number=?",
-                    (p.label, (p.label + " / " + ",".join(f"{k}:{v}" for k, v in methods.items()))[:200], document_id, p.page_number),
+                    "UPDATE pages SET label=? WHERE document_id=? AND page_number=?",
+                    (p.label, document_id, p.page_number),
                 )
 
             stats = {
